@@ -1,4 +1,4 @@
-# angie-armv7
+# angie-armv7 enhanced nginx proxy/webserver fork with built in Lets Encrypt
 
 Builds [Angie](https://angie.software/) (an nginx fork) from source for `linux/arm/v7`,
 since upstream publishes only `amd64` and `arm64`.
