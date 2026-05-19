@@ -2,16 +2,27 @@ name: build-armv7
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       angie_version:
-        description: "Angie version"
+        description: "Angie version. Leave blank to use the latest upstream version."
         required: false
-        default: "1.11.4"
+        default: ""
+      force_rebuild:
+        description: "Rebuild even if the versioned GHCR tag already exists."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
   packages: write
+
+concurrency:
+  group: build-armv7
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -19,28 +30,79 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve Angie version
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild || false }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          REQUESTED_VERSION: ${{ github.event.inputs.angie_version || '' }}
+        run: |
+          set -euo pipefail
+
+          image="ghcr.io/$(tr '[:upper:]' '[:lower:]' <<<"$REPOSITORY_OWNER")/angie"
+
+          if [[ -n "$REQUESTED_VERSION" ]]; then
+            version="$REQUESTED_VERSION"
+          else
+            version="$(
+              curl -fsSL https://download.angie.software/files/ \
+                | grep -oE 'angie-[0-9]+(\.[0-9]+){2}\.tar\.gz' \
+                | sed -E 's/^angie-//; s/\.tar\.gz$//' \
+                | sort -V \
+                | tail -n 1
+            )"
+          fi
+
+          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){2}$ ]]; then
+            echo "Unable to resolve a valid Angie version." >&2
+            exit 1
+          fi
+
+          tag="${image}:${version}-armv7"
+          should_build=true
+          if [[ "$EVENT_NAME" == "schedule" ]] \
+            && [[ "$FORCE_REBUILD" != "true" ]] \
+            && docker manifest inspect "$tag" >/dev/null 2>&1; then
+            should_build=false
+            echo "Scheduled run found existing tag $tag; skipping build."
+          fi
+
+          {
+            echo "image=$image"
+            echo "version=$version"
+            echo "should_build=$should_build"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved Angie $version for $image."
+
       - uses: docker/setup-qemu-action@v3
+        if: steps.version.outputs.should_build == 'true'
         with:
           platforms: linux/arm/v7
 
       - uses: docker/setup-buildx-action@v3
+        if: steps.version.outputs.should_build == 'true'
 
       - uses: docker/login-action@v3
+        if: steps.version.outputs.should_build == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/build-push-action@v6
+        if: steps.version.outputs.should_build == 'true'
         with:
           context: .
           platforms: linux/arm/v7
           push: true
           provenance: false
           tags: |
-            ghcr.io/${{ github.repository_owner }}/angie:armv7
-            ghcr.io/${{ github.repository_owner }}/angie:${{ inputs.angie_version || '1.11.4' }}-armv7
+            ${{ steps.version.outputs.image }}:armv7
+            ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}-armv7
           build-args: |
-            ANGIE_VERSION=${{ inputs.angie_version || '1.11.4' }}
+            ANGIE_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

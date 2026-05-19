@@ -10,28 +10,34 @@ See [DEPLOY.md](DEPLOY.md) for how the image is wired up on the router (NAT, cer
 
 ## Rebuilding
 
-### Bumping the Angie version
+### Automatic upstream rebuilds
 
-1. Edit the `ANGIE_VERSION` `ARG` default at the top of `Dockerfile`.
-2. Edit the default in `.github/workflows/build.yml` (in two places: the
-   `workflow_dispatch.inputs.angie_version.default` and the `${{ inputs.angie_version || '...' }}`
-   fallbacks).
-3. Commit & push to `main`. The workflow rebuilds and pushes:
-   - `ghcr.io/jr551/angie:armv7` (rolling)
-   - `ghcr.io/jr551/angie:<version>-armv7` (immutable)
+The GitHub Actions workflow runs daily and checks <https://download.angie.software/files/>
+for the highest `angie-X.Y.Z.tar.gz` version. If `ghcr.io/jr551/angie:<version>-armv7`
+does not already exist, it builds and pushes:
 
-Latest tags are listed at <https://download.angie.software/files/> (`angie-X.Y.Z.tar.gz`).
+- `ghcr.io/jr551/angie:armv7` (rolling)
+- `ghcr.io/jr551/angie:<version>-armv7` (immutable)
 
-### Manual rebuild without bumping
+Pushes to `main` also rebuild using the latest upstream version.
 
-`gh workflow run build-armv7 -R jr551/angie-armv7` — or trigger from the Actions tab,
-optionally passing a different `angie_version` input.
+### Manual rebuild
+
+Trigger from the Actions tab or run:
+
+```sh
+gh workflow run build-armv7 -R jr551/angie-armv7
+```
+
+Leave `angie_version` blank to build the latest upstream release, or set it to build a
+specific version. Set `force_rebuild=true` when you want to rebuild even if the immutable
+version tag already exists.
 
 ### Build locally (if you have working buildx)
 
 ```sh
 docker buildx build --platform linux/arm/v7 \
-  --build-arg ANGIE_VERSION=1.11.4 \
+  --build-arg ANGIE_VERSION=1.11.5 \
   -t ghcr.io/jr551/angie:armv7 \
   --push .
 ```
