@@ -18,7 +18,7 @@ RUN curl -fsSLO "https://download.angie.software/files/angie-${ANGIE_VERSION}.ta
 WORKDIR /src/angie-${ANGIE_VERSION}
 RUN ./configure \
         --prefix=/usr/share/angie \
-        --sbin-path=/usr/sbin/angie \
+        --sbin-path=/usr/bin/angie \
         --modules-path=/usr/lib/angie/modules \
         --conf-path=/etc/angie/angie.conf \
         --error-log-path=/var/log/angie/error.log \
@@ -46,7 +46,7 @@ RUN ./configure \
         --with-stream_ssl_module \
  && make -j"$(nproc)" \
  && make install \
- && strip /usr/sbin/angie
+ && strip /usr/bin/angie
 
 FROM alpine:3.21
 ARG ANGIE_VERSION
@@ -60,7 +60,7 @@ RUN apk add --no-cache pcre2 zlib openssl tzdata ca-certificates \
  && mkdir -p /var/log/angie /var/cache/angie /etc/angie \
  && chown -R angie:angie /var/log/angie /var/cache/angie
 
-COPY --from=build /usr/sbin/angie /usr/sbin/angie
+COPY --from=build /usr/bin/angie /usr/bin/angie
 COPY --from=build /etc/angie/ /etc/angie/
 COPY --from=build /usr/share/angie/ /usr/share/angie/
 
@@ -70,4 +70,4 @@ RUN ln -sf /dev/stdout /var/log/angie/access.log \
 
 EXPOSE 80 443
 STOPSIGNAL SIGQUIT
-CMD ["angie", "-g", "daemon off;"]
+CMD ["/usr/bin/angie", "-g", "daemon off;"]
