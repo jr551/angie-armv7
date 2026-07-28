@@ -1,25 +1,26 @@
 # Deployment on the MikroTik L009
 
 Reference for how the `ghcr.io/jr551/angie:armv7` image is wired up as a public-facing
-reverse proxy on `jr551@192.168.69.1`. All paths and IPs reflect the live setup.
+reverse proxy on `jr551@192.168.1.1`. Paths, IPs, and hostnames below are placeholders —
+swap in your own router IP, LAN/veth addresses, storage path, DDNS hostname, and email.
 
 ## Layout
 
 | Thing               | Value                                                       |
 | ------------------- | ----------------------------------------------------------- |
 | Container name      | `angie`                                                     |
-| veth                | `veth-angie` (172.31.0.10/24, gateway 172.31.0.1)           |
+| veth                | `veth-angie` (172.31.0.10/24, gateway 172.31.0.1) — example addresses, use your own container subnet |
 | Bridge              | `containers`                                                |
-| Root dir on SSD     | `/samsungssd2tb/container-root/angie`                       |
-| Config/data on SSD  | `/samsungssd2tb/container-root/angie-deploy/`               |
-| Public hostname     | `hfd09d4n3be.sn.mynetname.net` (MikroTik DDNS → 89.35.197.169) |
-| Cert lives on       | `/samsungssd2tb/container-root/angie-deploy/certs/`         |
+| Root dir on SSD     | `/path/to/container-root/angie`                       |
+| Config/data on SSD  | `/path/to/container-root/angie-deploy/`               |
+| Public hostname     | `your-ddns-hostname.example.com` (MikroTik DDNS → your public IP) |
+| Cert lives on       | `/path/to/container-root/angie-deploy/certs/`         |
 | ACME client         | `~/.acme.sh/` on the user's Mac (cron-driven daily)         |
 
 ## SSD layout
 
 ```
-/samsungssd2tb/container-root/
+/path/to/container-root/
 ├── angie/                       # container root (RouterOS-managed)
 └── angie-deploy/
     ├── conf/angie.conf          # mounted to /etc/angie/angie.conf
@@ -40,8 +41,8 @@ If you ever blow away the container and need to recreate it:
 
 ```sh
 # On the Mac:
-scp -O ~/angie-deploy/conf/angie.conf  jr551@192.168.69.1:/samsungssd2tb/container-root/angie-deploy/conf/angie.conf
-scp -O ~/angie-deploy/html/index.html  jr551@192.168.69.1:/samsungssd2tb/container-root/angie-deploy/html/index.html
+scp -O ~/angie-deploy/conf/angie.conf  jr551@192.168.1.1:/path/to/container-root/angie-deploy/conf/angie.conf
+scp -O ~/angie-deploy/html/index.html  jr551@192.168.1.1:/path/to/container-root/angie-deploy/html/index.html
 # certs come from acme.sh — see "Certificate" section below
 ```
 
@@ -54,9 +55,9 @@ If lost, re-create from the snippets in this doc.)
 /interface/veth/add name=veth-angie address=172.31.0.10/24 gateway=172.31.0.1
 /interface/bridge/port/add bridge=containers interface=veth-angie
 
-/container/mounts/add list=angie_conf  src=/samsungssd2tb/container-root/angie-deploy/conf/angie.conf  dst=/etc/angie/angie.conf
-/container/mounts/add list=angie_html  src=/samsungssd2tb/container-root/angie-deploy/html             dst=/usr/share/angie/html
-/container/mounts/add list=angie_certs src=/samsungssd2tb/container-root/angie-deploy/certs            dst=/etc/angie/certs
+/container/mounts/add list=angie_conf  src=/path/to/container-root/angie-deploy/conf/angie.conf  dst=/etc/angie/angie.conf
+/container/mounts/add list=angie_html  src=/path/to/container-root/angie-deploy/html             dst=/usr/share/angie/html
+/container/mounts/add list=angie_certs src=/path/to/container-root/angie-deploy/certs            dst=/etc/angie/certs
 ```
 
 ### 3. Add the container
@@ -65,7 +66,7 @@ If lost, re-create from the snippets in this doc.)
 /container/add \
   remote-image=ghcr.io/jr551/angie:armv7 \
   interface=veth-angie \
-  root-dir=/samsungssd2tb/container-root/angie \
+  root-dir=/path/to/container-root/angie \
   name=angie \
   mountlists=angie_conf,angie_html,angie_certs \
   dns=1.1.1.1 \
@@ -81,6 +82,8 @@ Wait for the `E` (downloading/extracting) flag to clear to `S` (stopped), then:
 ```
 
 ### 4. NAT — publish 80/443
+
+`172.31.0.10` below is the example veth address from step 2 — substitute your own.
 
 ```routeros
 /ip/firewall/nat/add chain=dstnat action=dst-nat protocol=tcp \
@@ -173,13 +176,13 @@ Issued and renewed on the Mac (`~/.acme.sh/`), pushed to the router via SCP.
 
 ```sh
 # Install acme.sh, register an account, capture the thumbprint:
-curl https://get.acme.sh | sh -s email=john.rowe@whitespacews.com
+curl https://get.acme.sh | sh -s email=you@example.com
 ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-~/.acme.sh/acme.sh --register-account -m john.rowe@whitespacews.com
+~/.acme.sh/acme.sh --register-account -m you@example.com
 # Note the printed ACCOUNT_THUMBPRINT — paste it into angie.conf
 # (the location block under server :80 above), then push the conf and restart angie.
 
-~/.acme.sh/acme.sh --issue --stateless -d hfd09d4n3be.sn.mynetname.net
+~/.acme.sh/acme.sh --issue --stateless -d your-ddns-hostname.example.com
 ```
 
 `--stateless` mode means acme.sh never has to write challenge files anywhere — angie
@@ -193,14 +196,14 @@ of expiry. After a successful renew, the `--install-cert --reloadcmd` runs to pu
 the new cert to the router and bounce the container:
 
 ```sh
-~/.acme.sh/acme.sh --install-cert -d hfd09d4n3be.sn.mynetname.net --ecc \
-  --fullchain-file ~/.acme.sh/deployed/hfd09d4n3be-fullchain.pem \
-  --key-file       ~/.acme.sh/deployed/hfd09d4n3be-key.pem \
-  --reloadcmd 'scp -O ~/.acme.sh/deployed/hfd09d4n3be-fullchain.pem jr551@192.168.69.1:/samsungssd2tb/container-root/angie-deploy/certs/cert.pem \
-            && scp -O ~/.acme.sh/deployed/hfd09d4n3be-key.pem       jr551@192.168.69.1:/samsungssd2tb/container-root/angie-deploy/certs/key.pem \
-            && ssh jr551@192.168.69.1 "/container/stop [find name=angie]" \
+~/.acme.sh/acme.sh --install-cert -d your-ddns-hostname.example.com --ecc \
+  --fullchain-file ~/.acme.sh/deployed/your-ddns-hostname-fullchain.pem \
+  --key-file       ~/.acme.sh/deployed/your-ddns-hostname-key.pem \
+  --reloadcmd 'scp -O ~/.acme.sh/deployed/your-ddns-hostname-fullchain.pem jr551@192.168.1.1:/path/to/container-root/angie-deploy/certs/cert.pem \
+            && scp -O ~/.acme.sh/deployed/your-ddns-hostname-key.pem       jr551@192.168.1.1:/path/to/container-root/angie-deploy/certs/key.pem \
+            && ssh jr551@192.168.1.1 "/container/stop [find name=angie]" \
             && sleep 3 \
-            && ssh jr551@192.168.69.1 "/container/start [find name=angie]"'
+            && ssh jr551@192.168.1.1 "/container/start [find name=angie]"'
 ```
 
 > **Note:** the live install currently uses `number=2` instead of `[find name=angie]`.
@@ -210,14 +213,14 @@ the new cert to the router and bounce the container:
 ### Force a renew now
 
 ```sh
-~/.acme.sh/acme.sh --renew --force --ecc -d hfd09d4n3be.sn.mynetname.net
+~/.acme.sh/acme.sh --renew --force --ecc -d your-ddns-hostname.example.com
 ```
 
 ### Verify
 
 ```sh
-echo | openssl s_client -connect hfd09d4n3be.sn.mynetname.net:443 \
-  -servername hfd09d4n3be.sn.mynetname.net 2>/dev/null \
+echo | openssl s_client -connect your-ddns-hostname.example.com:443 \
+  -servername your-ddns-hostname.example.com 2>/dev/null \
   | openssl x509 -noout -subject -issuer -dates
 ```
 
@@ -225,11 +228,11 @@ echo | openssl s_client -connect hfd09d4n3be.sn.mynetname.net:443 \
 
 | Task                         | Command                                                                  |
 | ---------------------------- | ------------------------------------------------------------------------ |
-| Reload config (= stop+start) | `ssh jr551@192.168.69.1 '/container/stop [find name=angie]; :delay 3s; /container/start [find name=angie]'` |
-| Tail angie logs              | `ssh jr551@192.168.69.1 '/log/print follow where topics~"container"'` (only with `logging=yes` on the container — already set) |
+| Reload config (= stop+start) | `ssh jr551@192.168.1.1 '/container/stop [find name=angie]; :delay 3s; /container/start [find name=angie]'` |
+| Tail angie logs              | `ssh jr551@192.168.1.1 '/log/print follow where topics~"container"'` (only with `logging=yes` on the container — already set) |
 | Edit hello-world page        | Edit `~/angie-deploy/html/index.html`, scp to SSD, restart container.    |
 | Edit angie config            | Edit `~/angie-deploy/conf/angie.conf`, scp to SSD, restart container.    |
-| Pull a new image version     | `ssh jr551@192.168.69.1 '/container/print detail where name=angie'` to see current digest, then `/container/remove [find name=angie]` and re-add — RouterOS doesn't have an in-place pull. |
+| Pull a new image version     | `ssh jr551@192.168.1.1 '/container/print detail where name=angie'` to see current digest, then `/container/remove [find name=angie]` and re-add — RouterOS doesn't have an in-place pull. |
 
 ## Rolling back to the old `.16.100` webserver
 
