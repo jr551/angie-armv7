@@ -17,7 +17,7 @@ on:
         type: boolean
 
 permissions:
-  contents: read
+  contents: write   # create GitHub Releases + upload assets
   packages: write
 
 concurrency:
@@ -25,11 +25,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  version:
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.version.outputs.image }}
+      version: ${{ steps.version.outputs.version }}
+      should_build: ${{ steps.version.outputs.should_build }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: Resolve Angie version
         id: version
         shell: bash
@@ -77,32 +79,119 @@ jobs:
 
           echo "Resolved Angie $version for $image."
 
+  build:
+    needs: version
+    if: needs.version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/arm/v7
+            archtag: armv7
+            archlabel: armv7
+          - platform: linux/riscv64
+            archtag: riscv64
+            archlabel: riscv64
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: docker/setup-qemu-action@v3
-        if: steps.version.outputs.should_build == 'true'
         with:
-          platforms: linux/arm/v7
+          platforms: arm,arm64,riscv64
 
       - uses: docker/setup-buildx-action@v3
-        if: steps.version.outputs.should_build == 'true'
 
       - uses: docker/login-action@v3
-        if: steps.version.outputs.should_build == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/build-push-action@v6
-        if: steps.version.outputs.should_build == 'true'
         with:
           context: .
-          platforms: linux/arm/v7
+          platforms: ${{ matrix.platform }}
           push: true
           provenance: false
           tags: |
-            ${{ steps.version.outputs.image }}:armv7
-            ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}-armv7
+            ${{ needs.version.outputs.image }}:${{ matrix.archtag }}
+            ${{ needs.version.outputs.image }}:${{ needs.version.outputs.version }}-${{ matrix.archtag }}
           build-args: |
-            ANGIE_VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ANGIE_VERSION=${{ needs.version.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.archtag }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.archtag }}
+
+      - name: Extract release assets from the pushed image
+        shell: bash
+        env:
+          IMAGE: ${{ needs.version.outputs.image }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCHTAG: ${{ matrix.archtag }}
+        run: |
+          set -euo pipefail
+
+          # Extract from the image that was just pushed so the release asset is
+          # guaranteed to be exactly what the registry serves.
+          ref="$IMAGE:$VERSION-$ARCHTAG"
+          docker pull --platform "$PLATFORM" "$ref"
+          cid="$(docker create --platform "$PLATFORM" "$ref" /bin/true)"
+          docker export "$cid" > /tmp/rootfs.tar
+          docker rm "$cid" >/dev/null
+
+          mkdir -p dist
+          bin="angie-${VERSION}-linux-${ARCHTAG}"
+          tar -xOf /tmp/rootfs.tar usr/bin/angie > "dist/$bin"
+          chmod +x "dist/$bin"
+          (cd dist && sha256sum "$bin" > "$bin.sha256")
+
+          # Guard: the extracted binary must match the target arch.
+          got="$(file -b "dist/$bin")"
+          echo "extracted: $got"
+          case "$ARCHTAG" in
+            armv7)   echo "$got" | grep -qi "ARM" ;;
+            riscv64) echo "$got" | grep -qi "RISC-V" ;;
+          esac || { echo "extracted binary is not $ARCHTAG — refusing to release" >&2; exit 1; }
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.archtag }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    if: needs.version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify assets
+        run: |
+          ls -lh dist/
+          test "$(find dist -name 'angie-*' -type f ! -name '*.sha256' | wc -l)" -ge 1
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.version }}
+          name: angie ${{ needs.version.outputs.version }}
+          body: |
+            Static `angie` ${{ needs.version.outputs.version }} binaries extracted from the published
+            GHCR images `ghcr.io/${{ github.repository_owner }}/angie:${{ needs.version.outputs.version }}-<arch>`.
+
+            | Asset | Arch |
+            | --- | --- |
+            | `angie-${{ needs.version.outputs.version }}-linux-armv7` | linux/arm/v7 (MikroTik container / armv7) |
+            | `angie-${{ needs.version.outputs.version }}-linux-riscv64` | linux/riscv64 |
+
+            Each binary has a matching `.sha256` checksum. Container images are preferred for routers:
+            `ghcr.io/${{ github.repository_owner }}/angie:<arch>` or `:<version>-<arch>`.
+          files: dist/**
+          fail_on_unmatched_files: true
+          make_latest: true
